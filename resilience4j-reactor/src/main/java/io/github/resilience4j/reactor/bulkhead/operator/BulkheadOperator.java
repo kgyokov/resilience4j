@@ -21,7 +21,10 @@ import io.github.resilience4j.reactor.IllegalPublisherException;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.SignalType;
 
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.UnaryOperator;
 
 /**
@@ -50,12 +53,48 @@ public class BulkheadOperator<T> implements UnaryOperator<Publisher<T>> {
         return new BulkheadOperator<>(bulkhead);
     }
 
+    private static <T> Function<Mono<T>, Mono<T>> monoTransform(Bulkhead bulkhead) {
+        return source ->
+            Mono.defer(() ->
+                bulkhead.tryAcquirePermission()
+                    ? source
+                    : Mono.error(BulkheadFullException.createBulkheadFullException(bulkhead))
+            )
+                .doFinally(releaseBasedOnSignal(bulkhead));
+    }
+
+    private static <T> Function<Flux<T>, Flux<T>> fluxTransform(Bulkhead bulkhead) {
+        return source ->
+            Flux.defer(() ->
+                bulkhead.tryAcquirePermission()
+                    ? source
+                    : Flux.error(BulkheadFullException.createBulkheadFullException(bulkhead))
+            )
+                .doFinally(releaseBasedOnSignal(bulkhead));
+    }
+
+    private static Consumer<SignalType> releaseBasedOnSignal(Bulkhead bulkhead) {
+        return type -> releaseBasedOnSignal(type, bulkhead);
+    }
+
+    private static void releaseBasedOnSignal(SignalType type, Bulkhead bulkhead) {
+        switch (type) {
+            case CANCEL:
+            case ON_ERROR:
+                bulkhead.releasePermission();
+                break;
+            default:
+                bulkhead.onComplete();
+                break;
+        }
+    }
+
     @Override
     public Publisher<T> apply(Publisher<T> publisher) {
         if (publisher instanceof Mono) {
-            return new MonoBulkhead<>((Mono<? extends T>) publisher, bulkhead);
+            return ((Mono<T>) publisher).transform(monoTransform(bulkhead));
         } else if (publisher instanceof Flux) {
-            return new FluxBulkhead<>((Flux<? extends T>) publisher, bulkhead);
+            return ((Flux<T>) publisher).transform(fluxTransform(bulkhead));
         } else {
             throw new IllegalPublisherException(publisher);
         }
