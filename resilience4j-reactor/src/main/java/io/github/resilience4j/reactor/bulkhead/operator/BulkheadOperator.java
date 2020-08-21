@@ -55,22 +55,49 @@ public class BulkheadOperator<T> implements UnaryOperator<Publisher<T>> {
 
     private static <T> Function<Mono<T>, Mono<T>> monoTransform(Bulkhead bulkhead) {
         return source ->
-            Mono.defer(() ->
-                bulkhead.tryAcquirePermission()
-                    ? source
+            Mono.fromSupplier(bulkhead::tryAcquirePermission)
+                .flatMap(success -> success
+                    ? source.doFinally(releaseBasedOnSignal(bulkhead))
                     : Mono.error(BulkheadFullException.createBulkheadFullException(bulkhead))
-            )
-                .doFinally(releaseBasedOnSignal(bulkhead));
+            );
+
+
+
+//        return source ->
+//            Mono.defer(() ->
+//                bulkhead.tryAcquirePermission()
+//                    ? source.doFinally(releaseBasedOnSignal(bulkhead))
+//                    : Mono.error(BulkheadFullException.createBulkheadFullException(bulkhead))
+//        );
     }
+
+//    private static <T> Function<Mono<T>, Mono<T>> monoTransform(Bulkhead bulkhead) {
+//        return source ->
+//            Mono.defer(() ->
+//                bulkhead.tryAcquirePermission()
+//                    ? source
+//                        .materialize()
+//                        .<T>dematerialize()
+//                    : Mono.error(BulkheadFullException.createBulkheadFullException(bulkhead))
+//            )
+//                .doFinally(releaseBasedOnSignal(bulkhead));
+//    }
 
     private static <T> Function<Flux<T>, Flux<T>> fluxTransform(Bulkhead bulkhead) {
         return source ->
-            Flux.defer(() ->
-                bulkhead.tryAcquirePermission()
-                    ? source
+            Mono.fromSupplier(bulkhead::tryAcquirePermission)
+                .flatMapMany(success -> success
+                    ? source.doFinally(releaseBasedOnSignal(bulkhead))
                     : Flux.error(BulkheadFullException.createBulkheadFullException(bulkhead))
-            )
-                .doFinally(releaseBasedOnSignal(bulkhead));
+                );
+
+
+//        return source ->
+//            Flux.defer(() ->
+//                bulkhead.tryAcquirePermission()
+//                    ? source.doFinally(releaseBasedOnSignal(bulkhead))
+//                    : Flux.error(BulkheadFullException.createBulkheadFullException(bulkhead))
+//            );
     }
 
     private static Consumer<SignalType> releaseBasedOnSignal(Bulkhead bulkhead) {
@@ -92,9 +119,9 @@ public class BulkheadOperator<T> implements UnaryOperator<Publisher<T>> {
     @Override
     public Publisher<T> apply(Publisher<T> publisher) {
         if (publisher instanceof Mono) {
-            return ((Mono<T>) publisher).transform(monoTransform(bulkhead));
+            return ((Mono<T>) publisher).transformDeferred(monoTransform(bulkhead));
         } else if (publisher instanceof Flux) {
-            return ((Flux<T>) publisher).transform(fluxTransform(bulkhead));
+            return ((Flux<T>) publisher).transformDeferred(fluxTransform(bulkhead));
         } else {
             throw new IllegalPublisherException(publisher);
         }
