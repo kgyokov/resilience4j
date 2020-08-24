@@ -23,6 +23,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
@@ -54,13 +55,35 @@ public class BulkheadOperator<T> implements UnaryOperator<Publisher<T>> {
     }
 
     private static <T> Function<Mono<T>, Mono<T>> monoTransform(Bulkhead bulkhead) {
+        final AtomicBoolean eventWasEmitted = new AtomicBoolean(false);
+        final AtomicBoolean cancelled = new AtomicBoolean(false);
+
         return source ->
-            Mono.fromSupplier(bulkhead::tryAcquirePermission)
-                .flatMap(success -> success
-                    ? source.doFinally(releaseBasedOnSignal(bulkhead))
-                    : Mono.error(BulkheadFullException.createBulkheadFullException(bulkhead))
+            Mono.using(
+                bulkhead::tryAcquirePermission,
+                success -> success
+                    ? source
+                        .doOnNext(__ -> eventWasEmitted.set(true))
+                        .doOnCancel(() -> cancelled.set(true))
+                    : Mono.error(BulkheadFullException.createBulkheadFullException(bulkhead)),
+                success -> {
+                    if (success) {
+                        if (!eventWasEmitted.get() && cancelled.get()) {
+                            bulkhead.releasePermission();
+                        } else {
+                            bulkhead.onComplete();
+                        }
+                    }
+                }
             );
 
+
+//        return source ->
+//            Mono.fromSupplier(bulkhead::tryAcquirePermission)
+//                .flatMap(success -> success
+//                    ? source.doFinally(releaseBasedOnSignal(bulkhead))
+//                    : Mono.error(BulkheadFullException.createBulkheadFullException(bulkhead))
+//            );
 
 
 //        return source ->
@@ -84,12 +107,34 @@ public class BulkheadOperator<T> implements UnaryOperator<Publisher<T>> {
 //    }
 
     private static <T> Function<Flux<T>, Flux<T>> fluxTransform(Bulkhead bulkhead) {
+        final AtomicBoolean eventWasEmitted = new AtomicBoolean(false);
+        final AtomicBoolean cancelled = new AtomicBoolean(false);
+
         return source ->
-            Mono.fromSupplier(bulkhead::tryAcquirePermission)
-                .flatMapMany(success -> success
-                    ? source.doFinally(releaseBasedOnSignal(bulkhead))
-                    : Flux.error(BulkheadFullException.createBulkheadFullException(bulkhead))
-                );
+            Flux.using(
+                bulkhead::tryAcquirePermission,
+                success -> success
+                    ? source
+                        .doOnNext(__ -> eventWasEmitted.set(true))
+                        .doOnCancel(() -> cancelled.set(true))
+                    : Flux.error(BulkheadFullException.createBulkheadFullException(bulkhead)),
+                success -> {
+                    if (success) {
+                        if (!eventWasEmitted.get() && cancelled.get()) {
+                            bulkhead.releasePermission();
+                        } else {
+                            bulkhead.onComplete();
+                        }
+                    }
+                }
+            );
+
+//        return source ->
+//            Mono.fromSupplier(bulkhead::tryAcquirePermission)
+//                .flatMapMany(success -> success
+//                    ? source.doFinally(releaseBasedOnSignal(bulkhead))
+//                    : Flux.error(BulkheadFullException.createBulkheadFullException(bulkhead))
+//                );
 
 
 //        return source ->
